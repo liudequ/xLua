@@ -199,32 +199,53 @@ namespace XLua
                         }
                     }
                 }
-                var scope = type.Scope;
-                if (type.Scope.MetadataScopeType == MetadataScopeType.AssemblyNameReference
-                    && ((AssemblyNameReference)scope).Name != assembly.MainModule.FullyQualifiedName) // other assembly must be public
-                {
-                    return false;
-                }
+
                 var resolveType = type.Resolve();
                 if ((!type.IsNested && !resolveType.IsPublic) || (type.IsNested && !resolveType.IsNestedPublic))
                 {
                     return true;
+                }
+                if (type.IsNested)
+                {
+                    var parent = type.DeclaringType;
+                    while (parent != null)
+                    {
+                        var resolveParent = parent.Resolve();
+                        if ((!parent.IsNested && !resolveParent.IsPublic) || (parent.IsNested && !resolveParent.IsNestedPublic))
+                        {
+                            return true;
+                        }
+                        if (parent.IsNested)
+                        {
+                            parent = parent.DeclaringType;
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
                 }
                 return false;
             }
 
         }
 
-        static bool genericInOut(AssemblyDefinition assembly, MethodReference method)
+        static bool genericInOut(AssemblyDefinition assembly, MethodDefinition method, int hotfixType)
         {
             if (hasGenericParameter(method.ReturnType) || isNoPublic(assembly, method.ReturnType))
             {
                 return true;
             }
             var parameters = method.Parameters;
+
+            if (!method.IsStatic && (hotfixType == 0 || method.IsConstructor)
+                && (hasGenericParameter(method.DeclaringType) || (method.DeclaringType.IsValueType && isNoPublic(assembly, method.DeclaringType))))
+            {
+                    return true;
+            }
             for (int i = 0; i < parameters.Count; i++)
             {
-                if (hasGenericParameter(parameters[i].ParameterType) || isNoPublic(assembly, parameters[i].ParameterType))
+                if ( hasGenericParameter(parameters[i].ParameterType) || ((parameters[i].ParameterType.IsValueType || parameters[i].ParameterType.IsByReference) && isNoPublic(assembly, parameters[i].ParameterType)))
                 {
                     return true;
                 }
@@ -271,7 +292,7 @@ namespace XLua
             {
                 if (method.Name != ".cctor" && !method.IsAbstract && !method.IsPInvokeImpl && method.Body != null)
                 {
-                    if ((method.HasGenericParameters || genericInOut(assembly, method)) ? !injectGenericMethod(assembly, method, hotfixType, stateTable) :
+                    if ((method.HasGenericParameters || genericInOut(assembly, method, hotfixType)) ? !injectGenericMethod(assembly, method, hotfixType, stateTable) :
                         !injectMethod(assembly, method, hotfixType, stateTable))
                     {
                         return false;
@@ -490,7 +511,7 @@ namespace XLua
                 return false;
             }
 
-            bool isFinalize = method.Name == "Finalize";
+            bool isFinalize = (method.Name == "Finalize" && method.IsSpecialName);
 
             TypeReference delegateType = null;
             MethodReference invoke = null;
@@ -577,6 +598,10 @@ namespace XLua
 
             if (isFinalize)
             {
+                if (method.Body.ExceptionHandlers.Count == 0)
+                {
+                    throw new InvalidProgramException("Finalize has not try-catch? Type :" + method.DeclaringType);
+                }
                 method.Body.ExceptionHandlers[0].TryStart = method.Body.Instructions[0];
             }
 
